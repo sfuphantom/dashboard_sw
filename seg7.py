@@ -31,44 +31,44 @@ eight = [1,0,0,0]
 nine = [1,0,0,1]
 
 
-def print_segment(charector):
-    if charector == 1:
+def print_segment(num):
+    if num == 1:
         for i in range(4):
             GPIO.output(segment4[i], one[i])
 
-    if charector == 2:
+    if num == 2:
         for i in range(4):
             GPIO.output(segment4[i], two[i])
 
-    if charector == 3:
+    if num == 3:
         for i in range(4):
             GPIO.output(segment4[i], three[i])
 
-    if charector == 4:
+    if num == 4:
         for i in range(4):
             GPIO.output(segment4[i], four[i])
 
-    if charector == 5:
+    if num == 5:
         for i in range(4):
             GPIO.output(segment4[i], five[i])
 
-    if charector == 6:
+    if num == 6:
         for i in range(4):
             GPIO.output(segment4[i], six[i])
 
-    if charector == 7:
+    if num == 7:
         for i in range(4):
             GPIO.output(segment4[i], seven[i])
 
-    if charector == 8:
+    if num == 8:
         for i in range(4):
             GPIO.output(segment4[i], eight[i])
 
-    if charector == 9:
+    if num == 9:
         for i in range(4):
             GPIO.output(segment4[i], nine[i])
 
-    if charector == 0:
+    if num == 0:
         for i in range(4):
             GPIO.output(segment4[i], zero[i])        
             
