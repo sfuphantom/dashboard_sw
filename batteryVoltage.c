@@ -38,7 +38,7 @@ void state_of_charge(uint8_t soc_decimal_sensor_data)
         fprintf(stderr, "Error: convert_to_binary returned NULL\n");
         return;
     }
-
+    printf("Decimal value: %d\n", soc_decimal_sensor_data);
     printf("Binary representation: %s\n", binary_result);
 
     // Ensure that the binary representation fits in a uint8_t
@@ -57,22 +57,24 @@ void state_of_charge(uint8_t soc_decimal_sensor_data)
         return;
     }
 
-    printf("Changed light bar brightness\n");
     digitalWrite(CS, HIGH);
 }
 
+void printBatteryVoltage(int soc_decimal_sensor_data)
+{
+    state_of_charge(soc_decimal_sensor_data);
+    usleep(10000000); // Only updates every 10 seconds
+    return;
+}
 void batteryVoltageBootup()
 {
     int test;
-    int i;
     for (test = 0; test < 255; test++)
     {
-        for (i = 0; i < 100; i++) // Loop for persistence of vision effect
-        {
-            state_of_charge(test);
-            usleep(10);
-        }
+        state_of_charge(test);
+        usleep(10000);
     }
+    usleep(1000000); // Stays fully lit for 1 seconds
     state_of_charge(0);
 }
 
