@@ -11,13 +11,14 @@
 #include <linux/can/raw.h>
 #include <wiringPi.h>
 #include <stdbool.h>
-#include <omp.h>
+#include <pthread.h>
 
 #include "vehicleSpeed.h"
 #include "batteryVoltage.h"
 
 void init7Seg(void);
 void printSpeed(int speed);
+void printBatteryVoltage(int voltage);
 
 void batteryVoltageBootup(void);
 void initSPI(void);
@@ -30,6 +31,22 @@ struct can_frame frame;
 // These act as semaphores to control the flow of the program
 bool isProcessingSpeedFrame = false;   // Flag to indicate if the program is processing speed frames
 bool isProcessingBatteryFrame = false; // Flag to indicate if the program is processing battery frames
+
+pthread_mutex_t speedMutex = PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t batteryMutex = PTHREAD_MUTEX_INITIALIZER;
+
+// Wrapper functions to satisfy pthread_create signature
+void *init7SegWrapper(void *arg)
+{
+    init7Seg();
+    return NULL;
+}
+
+void *initSPIWrapper(void *arg)
+{
+    initSPI();
+    return NULL;
+}
 
 int initCAN()
 {
@@ -62,90 +79,160 @@ int initCAN()
     return 0;
 }
 
-void recieveCANSpeedFrame()
+void *initCANWrapper(void *arg)
 {
-    // Receive a CAN frame
-    if (read(s, &frame, sizeof(struct can_frame)) < 0)
-    {
-        perror("Read error");
-        printf("data: %d\n", frame.data[0]);
-
-        return;
-    }
-    // Display received CAN frame data
-    printf("Received CAN frame:\n");
-    printf("ID: 0x%X\n", frame.can_id);
-    printf("DLC: %d\n", frame.can_dlc);
-    printf("Data: ");
-
-    for (int i = 0; i < frame.can_dlc; i++)
-    {
-        printf("0x%02X\n", frame.data[i]);
-        int valRecieved = frame.data[i];
-        printf("Integer Value: %d\n", valRecieved);
-
-        // Display the speed on the 7-segment display
-        printSpeed(valRecieved);
-    }
-    printf("\n");
+    initCAN();
+    return NULL;
 }
 
-int main()
+void receiveCANSpeedFrame()
 {
-
-#pragma omp parallel sections num_threads(2)
+    while (1) // loops until finds frame we're looking for
     {
+        printf("Receiving Speed Frame\n");
+        // Receive a CAN frame
+        // if (read(s, &frame, sizeof(struct can_frame)) < 0)
+        // {
+        //     printf("Error reading CAN frame\n");
+        //     perror("Read error");
+        //     printf("data: %d\n", frame.data[0]);
 
-// #pragma omp section
-//             {
-//                 initCAN(); // Run initCAN on one thread
-//             }
-#pragma omp section
-        {
-            init7Seg(); // Run init7Seg on another thread
-        }
+        //     return;
+        // }
+        // Display received CAN frame data
+        printf("Received CAN frame:\n");
+        printf("ID: 0x%X\n", frame.can_id);
+        printf("DLC: %d\n", frame.can_dlc);
 
-#pragma omp section
+        if (frame.can_id == 5) // Arbitrary id for SPEED
         {
-            initSPI(); // Run initSPI on another thread
+            printf("Data: ");
+
+            for (int i = 0; i < frame.can_dlc; i++)
+            {
+                printf("0x%02X\n", frame.data[i]);
+                int valReceived = frame.data[i];
+                printf("Integer Value: %d\n", valReceived);
+                printf("\n");
+
+                // Display the speed on the 7-segment display
+                printSpeed(valReceived);
+                isProcessingSpeedFrame = false;
+                return;
+            }
         }
     }
+}
+
+void receiveCANBatteryFrame()
+{
+    while (1) // loops until finds frame we're looking for
+    {
+        printf("Receiving Battery Frame\n");
+
+        // // Receive a CAN frame
+        // if (read(s, &frame, sizeof(struct can_frame)) < 0)
+        // {
+        //     perror("Read error");
+        //     printf("data: %d\n", frame.data[0]);
+        //     return;
+        // }
+        // Display received CAN frame data
+        printf("Received CAN frame:\n");
+        printf("ID: 0x%X\n", frame.can_id);
+        printf("DLC: %d\n", frame.can_dlc);
+
+        if (frame.can_id == 6) // Arbitrary id for BATTERY
+        {
+            printf("Data: ");
+
+            for (int i = 0; i < frame.can_dlc; i++)
+            {
+                printf("0x%02X\n", frame.data[i]);
+                int valReceived = frame.data[i];
+                printf("Integer Value: %d\n", valReceived);
+                printf("\n");
+
+                // Display the speed on the 7-segment display
+                printBatteryVoltage(valReceived);
+                isProcessingBatteryFrame = false;
+                return;
+            }
+        }
+    }
+}
+
+void *speedFrameThreadFunction(void *arg)
+{
+    while (1)
+    {
+        pthread_mutex_lock(&speedMutex);
+        if (!isProcessingSpeedFrame)
+        {
+            isProcessingSpeedFrame = true;
+            receiveCANSpeedFrame();
+        }
+        pthread_mutex_unlock(&speedMutex);
+    }
+}
+
+void *batteryFrameThreadFunction(void *arg)
+{
+    while (1)
+    {
+        pthread_mutex_lock(&speedMutex);
+        if (!isProcessingBatteryFrame)
+        {
+            isProcessingBatteryFrame = true;
+            receiveCANBatteryFrame();
+        }
+        pthread_mutex_unlock(&speedMutex);
+    }
+}
+int main()
+{
+    pthread_t displayBatteryThread, displaySpeedThread;
+    // pthread_t init7SegThread, initSPIThread, initCANThread;
+    pthread_t init7SegThread, initSPIThread;
+
+    // pthread_create(&initCANThread, NULL, initCANWrapper, NULL);
+    pthread_create(&init7SegThread, NULL, init7SegWrapper, NULL);
+    pthread_create(&initSPIThread, NULL, initSPIWrapper, NULL);
+
+    // init7Seg();
+    // initSPI();
+    // initCAN();
+
+    // pthread_join(initCANThread, NULL);
+    pthread_join(init7SegThread, NULL);
+    pthread_join(initSPIThread, NULL);
+
+    // Initialize the two main threads
+    pthread_create(&displaySpeedThread, NULL, speedFrameThreadFunction, NULL);
+
+    pthread_create(&displayBatteryThread, NULL, batteryFrameThreadFunction, NULL);
 
     while (1)
     {
-#pragma omp parallel sections
+        pthread_mutex_lock(&speedMutex);
+        if (!isProcessingSpeedFrame)
         {
 
-#pragma omp section
-            {
-
-                if (!isProcessingBatteryFrame)
-                {
-                    printf("idSpeed = %d, \n", omp_get_thread_num());
-
-                    isProcessingBatteryFrame = true;
-                    // recieveCANBatteryFrame(); // Receive CAN frame and process it
-
-                    printf("Battery Frame\n");
-                    isProcessingBatteryFrame = false;
-                }
-            }
-#pragma omp section
-            {
-
-                if (!isProcessingSpeedFrame)
-                {
-                    printf("idFrame = %d, \n", omp_get_thread_num());
-
-                    isProcessingSpeedFrame = true;
-                    // recieveCANSpeedFrame(); // Receive CAN frame and process it
-                    printf("Speed Frame\n");
-                    isProcessingSpeedFrame = false;
-                }
-            }
+            isProcessingSpeedFrame = true;
         }
+        pthread_mutex_unlock(&speedMutex);
 
-        // // Close the CAN socket
-        // close(s);
+        pthread_mutex_lock(&batteryMutex);
+        if (!isProcessingBatteryFrame)
+        {
+            isProcessingBatteryFrame = true;
+        }
+        pthread_mutex_unlock(&batteryMutex);
+        usleep(500000); // Main loop delay to reduce CPU usage (0.5seconds)
     }
+
+    // Close the CAN socket
+    // close(s);
+    // pthread_join(displaySpeedThread, NULL);
+    // pthread_join(displayBatteryThread, NULL);
 }
