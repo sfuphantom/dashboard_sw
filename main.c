@@ -117,10 +117,10 @@ void receiveCANSpeedFrame()
 
                 // Display the speed on the 7-segment display
                 printSpeed(valReceived);
-                isProcessingSpeedFrame = false;
                 return;
             }
         }
+        usleep(500000); // Delay to reduce CPU usage (0.5seconds)
     }
 }
 
@@ -155,24 +155,28 @@ void receiveCANBatteryFrame()
 
                 // Display the speed on the 7-segment display
                 printBatteryVoltage(valReceived);
-                isProcessingBatteryFrame = false;
                 return;
             }
         }
+        usleep(500000); // Delay to reduce CPU usage (0.5seconds)
     }
 }
-
 void *speedFrameThreadFunction(void *arg)
 {
     while (1)
     {
+        printf("1\n");
         pthread_mutex_lock(&speedMutex);
         if (!isProcessingSpeedFrame)
         {
             isProcessingSpeedFrame = true;
-            receiveCANSpeedFrame();
+            pthread_mutex_unlock(&speedMutex);
+            receiveCANSpeedFrame(); // Process speed frames in this function
+            pthread_mutex_lock(&speedMutex);
+            isProcessingSpeedFrame = false; // Reset flag after processing
         }
         pthread_mutex_unlock(&speedMutex);
+        usleep(500000);
     }
 }
 
@@ -180,17 +184,25 @@ void *batteryFrameThreadFunction(void *arg)
 {
     while (1)
     {
-        pthread_mutex_lock(&speedMutex);
+        printf("2\n");
+
+        pthread_mutex_lock(&batteryMutex);
         if (!isProcessingBatteryFrame)
         {
             isProcessingBatteryFrame = true;
-            receiveCANBatteryFrame();
+            pthread_mutex_unlock(&batteryMutex);
+            receiveCANBatteryFrame(); // Process battery frames in this function
+            pthread_mutex_lock(&batteryMutex);
+            isProcessingBatteryFrame = false; // Reset flag after processing
         }
-        pthread_mutex_unlock(&speedMutex);
+        pthread_mutex_unlock(&batteryMutex);
+        usleep(500000);
     }
 }
 int main()
 {
+    pthread_mutex_init(&speedMutex, NULL);
+    pthread_mutex_init(&batteryMutex, NULL);
     pthread_t displayBatteryThread, displaySpeedThread;
     // pthread_t init7SegThread, initSPIThread, initCANThread;
     pthread_t init7SegThread, initSPIThread;
@@ -206,33 +218,31 @@ int main()
     // pthread_join(initCANThread, NULL);
     pthread_join(init7SegThread, NULL);
     pthread_join(initSPIThread, NULL);
-
+    printf("2 init threads joined backed to main\n");
     // Initialize the two main threads
-    pthread_create(&displaySpeedThread, NULL, speedFrameThreadFunction, NULL);
+    printf("Start of program\n");
 
-    pthread_create(&displayBatteryThread, NULL, batteryFrameThreadFunction, NULL);
+    // if (initCAN != 0){
+    //     fprinf(stderr, "Failed to initialize CAN interface\n");
+    //     exit(1);
+    // }
 
+    if (pthread_create(&displaySpeedThread, NULL, speedFrameThreadFunction, NULL) != 0)
+    {
+        perror("Failed to create speed frame thread\n");
+        exit(1);
+    }
+    if (pthread_create(&displayBatteryThread, NULL, batteryFrameThreadFunction, NULL) != 0)
+    {
+        perror("Failed to create battery frame thread\n");
+        exit(1);
+    }
+
+    // While loop needed otherwise program terminates through main thread.
     while (1)
     {
-        pthread_mutex_lock(&speedMutex);
-        if (!isProcessingSpeedFrame)
-        {
-
-            isProcessingSpeedFrame = true;
-        }
-        pthread_mutex_unlock(&speedMutex);
-
-        pthread_mutex_lock(&batteryMutex);
-        if (!isProcessingBatteryFrame)
-        {
-            isProcessingBatteryFrame = true;
-        }
-        pthread_mutex_unlock(&batteryMutex);
-        usleep(500000); // Main loop delay to reduce CPU usage (0.5seconds)
     }
 
     // Close the CAN socket
     // close(s);
-    // pthread_join(displaySpeedThread, NULL);
-    // pthread_join(displayBatteryThread, NULL);
 }
