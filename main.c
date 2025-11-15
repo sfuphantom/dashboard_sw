@@ -104,7 +104,7 @@ void receiveCANSpeedFrame()
         printf("ID: 0x%X\n", frame.can_id);
         printf("DLC: %d\n", frame.can_dlc);
 
-        if (frame.can_id == 5) // Arbitrary id for SPEED
+        if (frame.can_id == 2) // id for SPEED
         {
             printf("Data: ");
 
