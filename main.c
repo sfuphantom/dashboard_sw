@@ -17,7 +17,6 @@
 #include "batteryVoltage.h"
 
 void init7Seg(void);
-void printSpeed(int speed);
 void printBatteryVoltage(int voltage);
 
 void batteryVoltageBootup(void);
@@ -91,14 +90,14 @@ void receiveCANSpeedFrame()
     {
         printf("Receiving Speed Frame\n");
         // Receive a CAN frame
-        // if (read(s, &frame, sizeof(struct can_frame)) < 0)
-        // {
-        //     printf("Error reading CAN frame\n");
-        //     perror("Read error");
-        //     printf("data: %d\n", frame.data[0]);
+        if (read(s, &frame, sizeof(struct can_frame)) < 0)
+        {
+            printf("Error reading CAN frame\n");
+            perror("Read error");
+            printf("data: %d\n", frame.data[0]);
 
-        //     return;
-        // }
+            return;
+        }
         // Display received CAN frame data
         printf("Received CAN frame:\n");
         printf("ID: 0x%X\n", frame.can_id);
@@ -106,19 +105,12 @@ void receiveCANSpeedFrame()
 
         if (frame.can_id == 2) // id for SPEED
         {
-            printf("Data: ");
+            int16_t raw = (frame.data[1] << 8) | frame.data[0];
+            float speed = raw / 100.0f;
 
-            for (int i = 0; i < frame.can_dlc; i++)
-            {
-                printf("0x%02X\n", frame.data[i]);
-                int valReceived = frame.data[i];
-                printf("Integer Value: %d\n", valReceived);
-                printf("\n");
+            printf("Decoded speed: %.2f m/s\n", speed);
 
-                // Display the speed on the 7-segment display
-                printSpeed(valReceived);
-                return;
-            }
+            return;
         }
         usleep(500000); // Delay to reduce CPU usage (0.5seconds)
     }
@@ -131,12 +123,12 @@ void receiveCANBatteryFrame()
         printf("Receiving Battery Frame\n");
 
         // // Receive a CAN frame
-        // if (read(s, &frame, sizeof(struct can_frame)) < 0)
-        // {
-        //     perror("Read error");
-        //     printf("data: %d\n", frame.data[0]);
-        //     return;
-        // }
+        if (read(s, &frame, sizeof(struct can_frame)) < 0)
+        {
+            perror("Read error");
+            printf("data: %d\n", frame.data[0]);
+            return;
+        }
         // Display received CAN frame data
         printf("Received CAN frame:\n");
         printf("ID: 0x%X\n", frame.can_id);
@@ -144,19 +136,12 @@ void receiveCANBatteryFrame()
 
         if (frame.can_id == 6) // Arbitrary id for BATTERY
         {
-            printf("Data: ");
+            int16_t raw = (frame.data[1] << 8) | frame.data[0];
+            float voltage = raw / 100.0f;
 
-            for (int i = 0; i < frame.can_dlc; i++)
-            {
-                printf("0x%02X\n", frame.data[i]);
-                int valReceived = frame.data[i];
-                printf("Integer Value: %d\n", valReceived);
-                printf("\n");
-
-                // Display the speed on the 7-segment display
-                printBatteryVoltage(valReceived);
-                return;
-            }
+            printf("Decoded battery voltage: %.2f V\n");
+            printBatteryVoltage((int)voltage);
+            return;
         }
         usleep(500000); // Delay to reduce CPU usage (0.5seconds)
     }
