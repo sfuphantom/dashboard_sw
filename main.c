@@ -11,6 +11,7 @@
 #include <linux/can/raw.h>
 #include <wiringPi.h>
 #include <stdbool.h>
+#include <stdint.h>
 #include <pthread.h>
 
 #include "vehicleSpeed.h"
@@ -78,12 +79,6 @@ int initCAN()
     return 0;
 }
 
-void *initCANWrapper(void *arg)
-{
-    initCAN();
-    return NULL;
-}
-
 void receiveCANSpeedFrame()
 {
     while (1) // loops until finds frame we're looking for
@@ -106,9 +101,9 @@ void receiveCANSpeedFrame()
         if (frame.can_id == 2) // id for SPEED
         {
             int16_t raw = (frame.data[1] << 8) | frame.data[0];
-            float speed = raw / 100.0f;
+            float speed = (raw / 100.0f) * 3.6;
 
-            printf("Decoded speed: %.2f m/s\n", speed);
+            printf("Decoded speed: %.2f km/h\n", speed);
 
             return;
         }
@@ -134,13 +129,18 @@ void receiveCANBatteryFrame()
         printf("ID: 0x%X\n", frame.can_id);
         printf("DLC: %d\n", frame.can_dlc);
 
-        if (frame.can_id == 6) // Arbitrary id for BATTERY
+        if (frame.can_id == 0x80) // Battery voltage frame
         {
-            int16_t raw = (frame.data[1] << 8) | frame.data[0];
-            float voltage = raw / 100.0f;
+            uint16_t raw = (frame.data[1] << 8) | frame.data[0];
+            double fraction = raw / 65535.0;
+            double voltage = 297.6 + fraction * (403.2 - 297.6);
+            double percent = fraction * 100.0;
+            uint8_t barLevel = (uint8_t)(fraction * 255.0);
 
-            printf("Decoded battery voltage: %.2f V\n");
-            printBatteryVoltage((int)voltage);
+            printf("Battery frame raw: %u\n", raw);
+            printf("Decoded battery voltage: %.2f V (%.2f%%)\n", voltage, percent);
+
+            printBatteryVoltage(barLevel);
             return;
         }
         usleep(500000); // Delay to reduce CPU usage (0.5seconds)
@@ -186,31 +186,41 @@ void *batteryFrameThreadFunction(void *arg)
 }
 int main()
 {
+    if (wiringPiSetup() == -1)
+    {
+        fprintf(stderr, "Failed to initialize WiringPi\n");
+        return 1;
+    }
+
     pthread_mutex_init(&speedMutex, NULL);
     pthread_mutex_init(&batteryMutex, NULL);
+
     pthread_t displayBatteryThread, displaySpeedThread;
-    // pthread_t init7SegThread, initSPIThread, initCANThread;
     pthread_t init7SegThread, initSPIThread;
 
-    // pthread_create(&initCANThread, NULL, initCANWrapper, NULL);
-    pthread_create(&init7SegThread, NULL, init7SegWrapper, NULL);
-    pthread_create(&initSPIThread, NULL, initSPIWrapper, NULL);
+    if (pthread_create(&init7SegThread, NULL, init7SegWrapper, NULL) != 0)
+    {
+        perror("Failed to start 7-seg init thread");
+        exit(1);
+    }
 
-    // init7Seg();
-    // initSPI();
-    // initCAN();
+    if (pthread_create(&initSPIThread, NULL, initSPIWrapper, NULL) != 0)
+    {
+        perror("Failed to start SPI init thread");
+        exit(1);
+    }
 
-    // pthread_join(initCANThread, NULL);
     pthread_join(init7SegThread, NULL);
     pthread_join(initSPIThread, NULL);
-    printf("2 init threads joined backed to main\n");
-    // Initialize the two main threads
-    printf("Start of program\n");
+    printf("Initialization threads completed\n");
 
-    // if (initCAN != 0){
-    //     fprinf(stderr, "Failed to initialize CAN interface\n");
-    //     exit(1);
-    // }
+    if (initCAN() != 0)
+    {
+        fprintf(stderr, "Failed to initialize CAN interface\n");
+        exit(1);
+    }
+
+    printf("Start of program\n");
 
     if (pthread_create(&displaySpeedThread, NULL, speedFrameThreadFunction, NULL) != 0)
     {
@@ -229,5 +239,5 @@ int main()
     }
 
     // Close the CAN socket
-    // close(s);
+    close(s);
 }
