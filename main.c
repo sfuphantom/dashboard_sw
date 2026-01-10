@@ -13,231 +13,286 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <pthread.h>
+#include <time.h>
+#include <errno.h> 
 
 #include "vehicleSpeed.h"
 #include "batteryVoltage.h"
+#include "decode.h"
 
-void init7Seg(void);
+int init7Seg(void);
+int initSPI(void);
+
 void printBatteryVoltage(int voltage);
-
 void batteryVoltageBootup(void);
-void initSPI(void);
 
-int s; // Socket descriptor
-struct sockaddr_can addr;
-struct ifreq ifr;
-struct can_frame frame;
-
-// These act as semaphores to control the flow of the program
-bool isProcessingSpeedFrame = false;   // Flag to indicate if the program is processing speed frames
-bool isProcessingBatteryFrame = false; // Flag to indicate if the program is processing battery frames
-
-pthread_mutex_t speedMutex = PTHREAD_MUTEX_INITIALIZER;
-pthread_mutex_t batteryMutex = PTHREAD_MUTEX_INITIALIZER;
-
-// Wrapper functions to satisfy pthread_create signature
-void *init7SegWrapper(void *arg)
+static long ms_since(const struct timespec *now, const struct timespec *prev)
 {
-    init7Seg();
-    return NULL;
+    return (now->tv_sec - prev->tv_sec) * 1000L +
+           (now->tv_nsec - prev->tv_nsec) / 1000000L;
 }
 
-void *initSPIWrapper(void *arg)
+// Shared State
+typedef struct
 {
-    initSPI();
-    return NULL;
-}
+    float speed_kmh;        // latest decoded speed
+    uint8_t battery_bar;    // 0..255 
 
-int initCAN()
+    bool has_speed;
+    bool has_battery;
+    
+    struct timespec last_speed_ts;
+    struct timespec last_battery_ts;
+
+    pthread_mutex_t m;
+    pthread_cond_t  cv;     // signal when new data arrives
+} SharedState;
+
+static SharedState g_state = {
+    .speed_kmh = 0.0f,
+    .battery_bar = 0,
+    .has_speed = false,
+    .has_battery = false,
+    .m = PTHREAD_MUTEX_INITIALIZER,
+    .cv = PTHREAD_COND_INITIALIZER
+};
+
+// CAN Globals 
+
+static int CAN_socket = -1;
+static struct sockaddr_can g_addr;
+static struct ifreq g_ifr;
+
+static int initCAN(const char *ifname)
 {
-
-    // Open a socket for CAN communication
-    if ((s = socket(PF_CAN, SOCK_RAW, CAN_RAW)) < 0)
+    CAN_socket = socket(PF_CAN, SOCK_RAW, CAN_RAW);
+    if (CAN_socket < 0)
     {
-        perror("Socket creation error");
-        return 1;
+        perror("CAN socket()");
+        return -1;
     }
 
-    // Specify the CAN interface name (vcan0 for virtual CAN interface)
-    strcpy(ifr.ifr_name, "can0");
+    // bind to interface (e.g., "can0")
+    memset(&g_ifr, 0, sizeof(g_ifr));
+    strncpy(g_ifr.ifr_name, ifname, IFNAMSIZ - 1);
 
-    // Get the interface index
-    if (ioctl(s, SIOCGIFINDEX, &ifr) < 0)
+    if (ioctl(CAN_socket, SIOCGIFINDEX, &g_ifr) < 0)
     {
-        perror("ioctl error");
-        return 1;
+        perror("CAN ioctl(SIOCGIFINDEX)");
+        close(CAN_socket);
+        CAN_socket = -1;
+        return -1;
     }
 
-    // Bind the socket to the CAN interface
-    addr.can_family = AF_CAN;
-    addr.can_ifindex = ifr.ifr_ifindex;
-    if (bind(s, (struct sockaddr *)&addr, sizeof(addr)) < 0)
+    memset(&g_addr, 0, sizeof(g_addr));
+    g_addr.can_family  = AF_CAN;
+    g_addr.can_ifindex = g_ifr.ifr_ifindex;
+
+    if (bind(CAN_socket, (struct sockaddr *)&g_addr, sizeof(g_addr)) < 0)
     {
-        perror("Bind error");
-        return 1;
+        perror("CAN bind()");
+        close(CAN_socket);
+        CAN_socket = -1;
+        return -1;
     }
+
     return 0;
 }
 
-void receiveCANSpeedFrame()
+static void handleSpeedFrame(const struct can_frame *f)
 {
-    while (1) // loops until finds frame we're looking for
-    {
-        printf("Receiving Speed Frame\n");
-        // Receive a CAN frame
-        if (read(s, &frame, sizeof(struct can_frame)) < 0)
-        {
-            printf("Error reading CAN frame\n");
-            perror("Read error");
-            printf("data: %d\n", frame.data[0]);
+    // ID == 0x02, speed in data[0..1] little-endian, scaled.
+    float speed_kmh = decode_speed_kmh(f->data[0], f->data[1]);
 
-            return;
-        }
-        // Display received CAN frame data
-        printf("Received CAN frame:\n");
-        printf("ID: 0x%X\n", frame.can_id);
-        printf("DLC: %d\n", frame.can_dlc);
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
 
-        if (frame.can_id == 2) // id for SPEED
-        {
-            int16_t raw = (frame.data[1] << 8) | frame.data[0];
-            float speed = (raw / 100.0f) * 3.6;
-
-            printf("Decoded speed: %.2f km/h\n", speed);
-
-            return;
-        }
-        usleep(500000); // Delay to reduce CPU usage (0.5seconds)
-    }
+    pthread_mutex_lock(&g_state.m);
+    g_state.speed_kmh = speed_kmh;
+    g_state.has_speed = true;
+    g_state.last_speed_ts = now;
+    pthread_cond_broadcast(&g_state.cv);
+    pthread_mutex_unlock(&g_state.m);
 }
 
-void receiveCANBatteryFrame()
+static void handleBatteryFrame(const struct can_frame *f)
 {
-    while (1) // loops until finds frame we're looking for
-    {
-        printf("Receiving Battery Frame\n");
+    // ID == 0x80, raw 0..65535 maps 297.6..403.2
+    uint8_t barLevel = decode_battery_bar(f->data[0], f->data[1]);
 
-        // // Receive a CAN frame
-        if (read(s, &frame, sizeof(struct can_frame)) < 0)
-        {
-            perror("Read error");
-            printf("data: %d\n", frame.data[0]);
-            return;
-        }
-        // Display received CAN frame data
-        printf("Received CAN frame:\n");
-        printf("ID: 0x%X\n", frame.can_id);
-        printf("DLC: %d\n", frame.can_dlc);
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
 
-        if (frame.can_id == 0x80) // Battery voltage frame
-        {
-            uint16_t raw = (frame.data[1] << 8) | frame.data[0];
-            double fraction = raw / 65535.0;
-            double voltage = 297.6 + fraction * (403.2 - 297.6);
-            double percent = fraction * 100.0;
-            uint8_t barLevel = (uint8_t)(fraction * 255.0);
-
-            printf("Battery frame raw: %u\n", raw);
-            printf("Decoded battery voltage: %.2f V (%.2f%%)\n", voltage, percent);
-
-            printBatteryVoltage(barLevel);
-            return;
-        }
-        usleep(500000); // Delay to reduce CPU usage (0.5seconds)
-    }
+    pthread_mutex_lock(&g_state.m);
+    g_state.battery_bar = barLevel;
+    g_state.has_battery = true;
+    g_state.last_battery_ts = now;
+    pthread_cond_broadcast(&g_state.cv);
+    pthread_mutex_unlock(&g_state.m);
 }
-void *speedFrameThreadFunction(void *arg)
+
+static void *canReaderThread(void *arg)
 {
+    (void)arg;
+    struct can_frame frame;
+
     while (1)
     {
-        printf("1\n");
-        pthread_mutex_lock(&speedMutex);
-        if (!isProcessingSpeedFrame)
+        ssize_t n = read(CAN_socket, &frame, sizeof(frame));
+        if (n < 0)
         {
-            isProcessingSpeedFrame = true;
-            pthread_mutex_unlock(&speedMutex);
-            receiveCANSpeedFrame(); // Process speed frames in this function
-            pthread_mutex_lock(&speedMutex);
-            isProcessingSpeedFrame = false; // Reset flag after processing
+            if (errno == EINTR) continue;  // interrupted, try again
+            perror("CAN read()");
+            usleep(100 * 1000);           // avoid tight error loop
+            continue;
         }
-        pthread_mutex_unlock(&speedMutex);
-        usleep(500000);
+        if (n != (ssize_t)sizeof(frame))
+        {
+            fprintf(stderr, "CAN: short read (%zd)\n", n);
+            continue;
+        }
+
+        if (frame.can_dlc < 2)
+        {
+            fprintf(stderr, "CAN: short frame DLC=%u\n", frame.can_dlc);
+            continue;
+        }
+
+        uint32_t can_id = frame.can_id & CAN_SFF_MASK;
+        if (can_id == 0x02)
+        {
+            handleSpeedFrame(&frame);
+        }
+        else if (can_id == 0x80)
+        {
+            handleBatteryFrame(&frame);
+        }
+        // else ignore other CAN IDs
     }
+
+    return NULL;
 }
 
-void *batteryFrameThreadFunction(void *arg)
+
+// Consumer threads for physical deisplay 
+
+// speed display thread -> wakes when speed updates
+static void *speedDisplayThread(void *arg)
 {
+    (void)arg;
+
+    int last_printed = -1;
+
     while (1)
     {
-        printf("2\n");
-
-        pthread_mutex_lock(&batteryMutex);
-        if (!isProcessingBatteryFrame)
+        pthread_mutex_lock(&g_state.m);
+        while (!g_state.has_speed)
         {
-            isProcessingBatteryFrame = true;
-            pthread_mutex_unlock(&batteryMutex);
-            receiveCANBatteryFrame(); // Process battery frames in this function
-            pthread_mutex_lock(&batteryMutex);
-            isProcessingBatteryFrame = false; // Reset flag after processing
+            pthread_cond_wait(&g_state.cv, &g_state.m);
         }
-        pthread_mutex_unlock(&batteryMutex);
-        usleep(500000);
+
+        float s = g_state.speed_kmh;
+        pthread_mutex_unlock(&g_state.m);
+
+        // print/update only if changed meaningfully -> simple despam
+        int display_speed = clamp_speed_display(s);
+        if (display_speed != last_printed)
+        {
+            // If your display function name is different, change this:
+            printSpeed(display_speed);
+            last_printed = display_speed;
+        }
+
+        // tiny sleep -> avoids hammering display if frames are rly fast
+        usleep(20 * 1000);
     }
+    return NULL;
 }
-int main()
+
+// Battery display thread: non-blocking, using rate-limit
+static void *batteryDisplayThread(void *arg)
 {
-    if (wiringPiSetup() == -1)
+    (void)arg;
+
+    uint8_t last_bar = 0xFF;
+    struct timespec last_update = {0};
+
+    while (1)
     {
-        fprintf(stderr, "Failed to initialize WiringPi\n");
+        pthread_mutex_lock(&g_state.m);
+        while (!g_state.has_battery)
+        {
+            pthread_cond_wait(&g_state.cv, &g_state.m);
+        }
+        uint8_t bar = g_state.battery_bar;
+        pthread_mutex_unlock(&g_state.m);
+
+        // Rate limit battery display 
+        struct timespec now;
+        clock_gettime(CLOCK_MONOTONIC, &now);
+
+        if (ms_since(&now, &last_update) >= 1000) // 1 seconds
+        {
+            if (bar != last_bar)
+            {
+                printBatteryVoltage((int)bar);
+                last_bar = bar;
+            }
+            last_update = now;
+        }
+
+        usleep(20 * 1000);
+    }
+    return NULL;
+}
+
+
+int main(void)
+{
+    // init hardware (sequential to avoid double/parallel WiringPi init)
+    if (init7Seg() != 0)
+    {
+        fprintf(stderr, "Failed to initialize 7-seg\n");
+        return 1;
+    }
+    if (initSPI() != 0)
+    {
+        fprintf(stderr, "Failed to initialize SPI\n");
         return 1;
     }
 
-    pthread_mutex_init(&speedMutex, NULL);
-    pthread_mutex_init(&batteryMutex, NULL);
-
-    pthread_t displayBatteryThread, displaySpeedThread;
-    pthread_t init7SegThread, initSPIThread;
-
-    if (pthread_create(&init7SegThread, NULL, init7SegWrapper, NULL) != 0)
-    {
-        perror("Failed to start 7-seg init thread");
-        exit(1);
-    }
-
-    if (pthread_create(&initSPIThread, NULL, initSPIWrapper, NULL) != 0)
-    {
-        perror("Failed to start SPI init thread");
-        exit(1);
-    }
-
-    pthread_join(init7SegThread, NULL);
-    pthread_join(initSPIThread, NULL);
-    printf("Initialization threads completed\n");
-
-    if (initCAN() != 0)
+    if (initCAN("can0") != 0)
     {
         fprintf(stderr, "Failed to initialize CAN interface\n");
-        exit(1);
+        return 1;
     }
 
     printf("Start of program\n");
 
-    if (pthread_create(&displaySpeedThread, NULL, speedFrameThreadFunction, NULL) != 0)
+    // start threads
+    pthread_t t_can, t_speed, t_batt;
+    if (pthread_create(&t_can, NULL, canReaderThread, NULL) != 0)
     {
-        perror("Failed to create speed frame thread\n");
-        exit(1);
+        perror("pthread_create(canReaderThread)");
+        return 1;
     }
-    if (pthread_create(&displayBatteryThread, NULL, batteryFrameThreadFunction, NULL) != 0)
+    if (pthread_create(&t_speed, NULL, speedDisplayThread, NULL) != 0)
     {
-        perror("Failed to create battery frame thread\n");
-        exit(1);
+        perror("pthread_create(speedDisplayThread)");
+        return 1;
+    }
+    if (pthread_create(&t_batt, NULL, batteryDisplayThread, NULL) != 0)
+    {
+        perror("pthread_create(batteryDisplayThread)");
+        return 1;
     }
 
-    // While loop needed otherwise program terminates through main thread.
-    while (1)
-    {
-    }
+    // main thread
+    pthread_join(t_can, NULL);
+    pthread_join(t_speed, NULL);
+    pthread_join(t_batt, NULL);
 
-    // Close the CAN socket
-    close(s);
+    // cleanup
+    if (CAN_socket >= 0) close(CAN_socket);
+    return 0;
 }
