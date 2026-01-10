@@ -36,6 +36,12 @@ void print_segment(int num)
 
 void printSpeed(int speed_sensor_data)
 {
+    // Note: Our dispaly onyl has two two digits, therefore we can only dispay nums 0-99
+    if (speed_sensor_data < 0)
+        speed_sensor_data = 0;
+    else if (speed_sensor_data > 99)
+        speed_sensor_data = 99;
+
     int i;                    // Loop variable
     for (i = 0; i < 100; i++) // Loop for persistence of vision effect
     {
@@ -51,7 +57,7 @@ void printSpeed(int speed_sensor_data)
         usleep(100);
         digitalWrite(digit2, LOW); // Turn off Digit Two
     }
-    printf("Speed Displayed\n");
+    // Intentionally no per-refresh logging to avoid console spam.
 }
 
 void bootup()
@@ -82,9 +88,13 @@ void bootup()
     digitalWrite(digit2, LOW); // Turn off Digit Two
 }
 
-void init7Seg()
+int init7Seg(void)
 {
-    wiringPiSetupGpio();
+    if (wiringPiSetupGpio() == -1)
+    {
+        fprintf(stderr, "Failed to initialize WiringPi GPIO\n");
+        return -1;
+    }
     int i;
 
     for (i = 0; i < 4; i++)
@@ -100,6 +110,7 @@ void init7Seg()
     digitalWrite(digit2, LOW);
 
     bootup();
+    return 0;
 }
 
 // int main(void)

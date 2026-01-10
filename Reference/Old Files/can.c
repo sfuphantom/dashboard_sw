@@ -70,7 +70,7 @@ void initCAN()
         if (read(s, &frame, sizeof(struct can_frame)) < 0)
         {
             perror("Read error");
-            printf(frame.data);
+            rintf("%02X\n", frame.data[0]);
             return 1;
         }
         // Display received CAN frame data
@@ -89,6 +89,5 @@ void initCAN()
     }
     // Close the CAN socket
     close(s);
-
-    return 0;
+    return 0; 
 }

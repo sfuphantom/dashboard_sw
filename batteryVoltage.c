@@ -7,63 +7,38 @@
 
 #include "batteryVoltage.h"
 
+// minimum battery voltage = 297.6 V, CAN = 0 (0% full)
+// maximum battery voltage = 403.2 V, CAN = 65535 (100% full)
+// anything inbetween = linear interpolation
+
+// Must treat CAN value as 01 fraction and scale it to bar indicator 
+
 const int CS = 24;
 const int SPI_CHANNEL = 1;
 const int SPI_SPEED = 20000000;
 
-char *convert_to_binary(uint8_t soc_decimal_sensor_data)
-{
-    static char binary_representation[9];
-    if (soc_decimal_sensor_data >= 0 && soc_decimal_sensor_data <= 255)
-    {
-        for (int i = 7; i >= 0; i--)
-        {
-            binary_representation[i] = (soc_decimal_sensor_data % 2) + '0';
-            soc_decimal_sensor_data /= 2;
-        }
-        return binary_representation;
-    }
-    else
-    {
-        printf("Value must be between 0 and 255\n");
-        return NULL;
-    }
-}
-
 void state_of_charge(uint8_t soc_decimal_sensor_data)
 {
-    char *binary_result = convert_to_binary(soc_decimal_sensor_data);
-    if (binary_result == NULL)
-    {
-        fprintf(stderr, "Error: convert_to_binary returned NULL\n");
-        return;
-    }
-    printf("Decimal value: %d\n", soc_decimal_sensor_data);
-    printf("Binary representation: %s\n", binary_result);
+    printf("Battery Charge value: %d\n", soc_decimal_sensor_data);
 
-    // Ensure that the binary representation fits in a uint8_t
-    // For simplicity, assume binary_result is at most 8 bits
-    uint8_t binary_value = (uint8_t)strtol(binary_result, NULL, 2);
-
-    // Clean up binary_result if it was dynamically allocated
-    // free(binary_result);
-
+    uint8_t binary_value = soc_decimal_sensor_data; // byte is bit pattern 
     uint8_t data[] = {0x00, 0x00, binary_value};
 
+    digitalWrite(CS, LOW); // selecting device
+    int rc = wiringPiSPIDataRW(SPI_CHANNEL, data, sizeof(data));
+    digitalWrite(CS, HIGH); // deselecting device
+
     // Ensure that SPI_CHANNEL and data are correct
-    if (wiringPiSPIDataRW(SPI_CHANNEL, data, sizeof(data)) == -1)
+    if (rc == -1)
     {
         fprintf(stderr, "Error: SPI data transfer failed\n");
         return;
     }
-
-    digitalWrite(CS, HIGH);
 }
 
 void printBatteryVoltage(int soc_decimal_sensor_data)
 {
-    state_of_charge(soc_decimal_sensor_data);
-    usleep(10000000); // Only updates every 10 seconds
+    state_of_charge((uint8_t)soc_decimal_sensor_data);
     return;
 }
 void batteryVoltageBootup()
@@ -78,27 +53,21 @@ void batteryVoltageBootup()
     state_of_charge(0);
 }
 
-void initSPI()
+int initSPI(void)
 {
-
-    wiringPiSPISetup(SPI_CHANNEL, SPI_SPEED);
+    if (wiringPiSetupGpio() == -1)
+    {
+        fprintf(stderr, "Failed to initialize WiringPi GPIO\n");
+        return -1;
+    }
+    if (wiringPiSPISetup(SPI_CHANNEL, SPI_SPEED) == -1)
+    {
+        fprintf(stderr, "Failed to initialize WiringPi SPI\n");
+        return -1;
+    }
     pinMode(CS, OUTPUT);
+    digitalWrite(CS, HIGH); // deselecting device
 
     batteryVoltageBootup();
+    return 0;
 }
-
-// int main()
-// {
-
-// if (wiringPiSetup() == -1)
-// {
-//     printf("Error initializing WiringPi\n");
-//     return;
-// }
-//     initSPI();
-
-//     uint8_t sensor_data = 255; // Example sensor data
-//     state_of_charge(sensor_data);
-
-//     return 0;
-// }

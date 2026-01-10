@@ -1,0 +1,12 @@
+[Unit]
+Description=Dashboard display
+After=network.target
+
+[Service]
+WorkingDirectory=@WORKDIR@
+ExecStartPre=/usr/local/bin/setup-can.sh
+ExecStart=@WORKDIR@/dashboard
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
